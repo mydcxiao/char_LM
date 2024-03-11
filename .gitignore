@@ -1,0 +1,6 @@
+.DS_Store
+/data/enwik8
+/data/enwik8/
+/data/*.raw
+/data/*.txt.raw
+/data/*.txt
