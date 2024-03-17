@@ -203,6 +203,7 @@ class TransformerBlock(nn.Module):
 
 class Transformer(nn.Module):
     last_loss: Optional[torch.Tensor]
+    last_bpc: Optional[torch.Tensor]
 
     def __init__(self, params: ModelArgs):
         super().__init__()
@@ -259,10 +260,12 @@ class Transformer(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.output(h)
             self.last_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            self.last_bpc = self.last_loss * torch.log2(torch.e)
         else:
             # inference-time mini-optimization: only forward the output on the very last position
             logits = self.output(h[:, [-1], :]) # note: using list [-1] to preserve the time dim
             self.last_loss = None
+            self.last_bpc = None
 
         return logits
 

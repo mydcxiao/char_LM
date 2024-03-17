@@ -6,7 +6,6 @@ import argparse
 import glob
 import json
 import os
-import sys
 import random
 from typing import List
 from concurrent.futures import ProcessPoolExecutor
@@ -55,11 +54,11 @@ def download():
         print(f"{data_filename} already exists, skipping download...")
     print("Download done.")
 
+
 def pretokenize():
     """Unpacks the enwiki dataset to DATA_CACHE_DIR"""
     if os.path.exists(os.path.join(DATA_CACHE_DIR, 'train_tok.bin')):
         print('Tokenized enwik8 already exists - skipping processing')
-        # sys.exit()
         return
     
     data_filename = os.path.join(DATA_CACHE_DIR, "enwik8.zip")

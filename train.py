@@ -28,7 +28,7 @@ from model import Transformer, ModelArgs
 from torch.distributed import destroy_process_group, init_process_group
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tinystories import Task
+from enwiki import Task
 # from export import model_export
 
 # -----------------------------------------------------------------------------
@@ -42,13 +42,13 @@ always_save_checkpoint = False  # if True, always save a checkpoint after each e
 init_from = "scratch"  # 'scratch' or 'resume'
 # wandb logging
 wandb_log = False  # disabled by default
-wandb_project = "llamac"
+wandb_project = "charlm"
 wandb_run_name = "run" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 # data
 batch_size = 128  # if gradient_accumulation_steps > 1, this is the micro-batch size
 max_seq_len = 256
-vocab_source = "llama2" # llama2|custom; use Lllama 2 vocab from Meta, or custom trained
-vocab_size = 32000 # the Llama 2 tokenizer has 32K tokens
+vocab_source = "enwik8" # llama2|custom; use Lllama 2 vocab from Meta, or custom trained
+vocab_size = 243 # the Llama 2 tokenizer has 32K tokens
 # model
 dim = 288
 n_layers = 6
@@ -86,8 +86,8 @@ lr_decay_iters = max_iters  # should be ~= max_iters per Chinchilla
 min_lr = 0.0  # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 
 # validating checks
-assert vocab_source in ["llama2", "custom"]
-assert vocab_source == "custom" or vocab_size == 32000, "The vocab from Meta has 32K tokens"
+assert vocab_source in ["enwik8", "custom"]
+# assert vocab_source == "custom" or vocab_size == 32000, "The vocab from Meta has 32K tokens"
 
 # various inits, derived attributes, I/O setup
 ddp = int(os.environ.get("RANK", -1)) != -1  # is this a ddp run?
@@ -215,13 +215,16 @@ def estimate_loss():
     for split in ["train", "val"]:
         batch_iter = iter_batches(split=split)
         losses = torch.zeros(eval_iters)  # keep on CPU
+        bpcs = torch.zeros(eval_iters)  # keep on CPU
         for k in range(eval_iters):
             X, Y = next(batch_iter)
             with ctx:
                 logits = model(X, Y)
                 loss = raw_model.last_loss
+                bpc = raw_model.last_bpc
             losses[k] = loss.item()
-        out[split] = losses.mean()
+            bpcs[k] = bpc.item()
+        out[split] = (losses.mean(), bpcs.mean())
     model.train()
     return out
 
@@ -267,8 +270,10 @@ while True:
                     {
                         "iter": iter_num,
                         "tokens": iter_num * tokens_per_iter,
-                        "loss/train": losses["train"],
-                        "loss/val": losses["val"],
+                        "loss/train": losses["train"][0],
+                        "bpc/train": losses["train"][1],
+                        "loss/val": losses["val"][0],
+                        "bpc/val": losses["val"][1],
                         "lr": lr,
                         "mfu": running_mfu * 100,  # convert to percentage
                     }, step = iter_num
