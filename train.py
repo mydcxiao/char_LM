@@ -30,6 +30,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 from enwiki import Task
 # from export import model_export
+# torch.autograd.set_detect_anomaly(True)
 
 # -----------------------------------------------------------------------------
 # I/O
@@ -48,7 +49,7 @@ wandb_run_name = "run" + datetime.now().strftime("%Y_%m_%d_%H_%M_%S")
 batch_size = 128  # if gradient_accumulation_steps > 1, this is the micro-batch size
 max_seq_len = 256
 vocab_source = "enwik8" # llama2|custom; use Lllama 2 vocab from Meta, or custom trained
-vocab_size = 243 # the Llama 2 tokenizer has 32K tokens
+vocab_size = 244 # the Llama 2 tokenizer has 32K tokens
 # model
 dim = 288
 n_layers = 6
@@ -133,7 +134,7 @@ iter_batches = partial(
     Task.iter_batches,
     batch_size=batch_size,
     max_seq_len=max_seq_len,
-    # vocab_size=vocab_size,
+    vocab_size=vocab_size,
     vocab_source=vocab_source,
     device=device,
     num_workers=0,
@@ -263,7 +264,7 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        print(f"step {iter_num}: train loss {losses['train'][0]:.4f}, train bpc {losses['train'][1]:.4f}, val loss {losses['val'][0]:.4f}, val bpc {losses['val'][1]:.4f}")
         if wandb_log:
             try:
                 wandb.log(
@@ -280,8 +281,8 @@ while True:
                 )
             except Exception as e:
                 print(f"logging to wandb failed: {e}")
-        if losses["val"] < best_val_loss or always_save_checkpoint:
-            best_val_loss = losses["val"]
+        if losses["val"][0] < best_val_loss or always_save_checkpoint:
+            best_val_loss = losses["val"][0]
             if iter_num > 0:
                 checkpoint = {
                     "model": raw_model.state_dict(),
@@ -331,11 +332,12 @@ while True:
     if iter_num % log_interval == 0 and master_process:
         # get loss as float, scale up due to the divide above. note: this is a CPU-GPU sync point
         lossf = loss.item() * gradient_accumulation_steps
+        bpc = raw_model.last_bpc
         if local_iter_num >= 5:  # let the training loop settle a bit
             mfu = raw_model.estimate_mfu(batch_size * gradient_accumulation_steps, dt)
             running_mfu = mfu if running_mfu == -1.0 else 0.9 * running_mfu + 0.1 * mfu
         print(
-            f"{iter_num} | loss {lossf:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%"
+            f"{iter_num} | loss {lossf:.4f} | bpc {bpc:.4f} | lr {lr:e} | {dt*1000:.2f}ms | mfu {running_mfu*100:.2f}%"
         )
     iter_num += 1
     local_iter_num += 1

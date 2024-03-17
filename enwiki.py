@@ -91,7 +91,7 @@ def pretokenize():
                 s = []
             else:
                 s.append(c)
-            VOCAB_SIZE = max(VOCAB_SIZE, c + enc.n_special_tokens)
+            VOCAB_SIZE = max(VOCAB_SIZE, c + enc.n_special_tokens+1)
         all_tokens = np.array(all_tokens, dtype=np.uint16)
         tokenized_filename = os.path.join(DATA_CACHE_DIR, f"{fn}_tok.bin")
         # write the bytes
@@ -192,17 +192,3 @@ if __name__ == "__main__":
         pretokenize()
     else:
         raise ValueError(f"Unknown stage {args.stage}")
-    
-    # iter_batches = partial(
-    # Task.iter_batches,
-    # batch_size=2,
-    # max_seq_len=500,
-    # # vocab_size=vocab_size,
-    # vocab_source="enwik8",
-    # device="cuda",
-    # num_workers=0,
-    # )
-    
-    # batch_iter = iter_batches(split="train")
-    
-    # print(next(batch_iter))
