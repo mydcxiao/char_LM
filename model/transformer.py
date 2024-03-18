@@ -106,6 +106,7 @@ class Attention(nn.Module):
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
+        self.alpha = nn.Parameter(torch.ones(args.max_seq_len,1))
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -120,6 +121,8 @@ class Attention(nn.Module):
         x: torch.Tensor,
         freqs_cos: torch.Tensor,
         freqs_sin: torch.Tensor,
+        p_xq: Optional[torch.Tensor] = None,
+        p_xk: Optional[torch.Tensor] = None,
     ):
         bsz, seqlen, _ = x.shape
 
@@ -144,6 +147,8 @@ class Attention(nn.Module):
         # flash implementation
         if self.flash:
             output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
+            p_output = torch.nn.functional.scaled_dot_product_attention(p_xq, p_xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True) if p_xq is not None else 0
+            output = self.alpha * output + (1 - self.alpha) * p_output
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
@@ -152,6 +157,15 @@ class Attention(nn.Module):
             scores = F.softmax(scores.float(), dim=-1).type_as(xq)
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
+            
+            p_scores = torch.matmul(p_xq, p_xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+            assert hasattr(self, 'mask')
+            p_scores = p_scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
+            p_scores = F.softmax(p_scores.float(), dim=-1).type_as(p_xq)
+            p_scores = self.attn_dropout(p_scores)
+            p_output = torch.matmul(p_scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
+            
+            output = self.alpha * output + (1 - self.alpha) * p_output
 
         # restore time as batch dimension and concat heads
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
@@ -159,7 +173,7 @@ class Attention(nn.Module):
         # final projection into the residual stream
         output = self.wo(output)
         output = self.resid_dropout(output)
-        return output
+        return output, xq, xk
 
 
 class FeedForward(nn.Module):
@@ -195,10 +209,11 @@ class TransformerBlock(nn.Module):
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
-    def forward(self, x, freqs_cos, freqs_sin):
-        h = x + self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin)
+    def forward(self, x, freqs_cos, freqs_sin, xq, xk):
+        h, xq, xk = self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin, xq, xk)
+        h = x + h
         out = h + self.feed_forward.forward(self.ffn_norm(h))
-        return out
+        return out, xq, xk
 
 
 class Transformer(nn.Module):
@@ -252,9 +267,10 @@ class Transformer(nn.Module):
         h = self.dropout(h)
         freqs_cos = self.freqs_cos[:seqlen]
         freqs_sin = self.freqs_sin[:seqlen]
-
+        
+        p_xq, p_xk = None, None
         for layer in self.layers:
-            h = layer(h, freqs_cos, freqs_sin)
+            h, p_xq, p_xk = layer(h, freqs_cos, freqs_sin, p_xq, p_xk)
         h = self.norm(h)
 
         if targets is not None:
