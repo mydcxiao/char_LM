@@ -20,6 +20,8 @@ class ModelArgs:
     norm_eps: float = 1e-5
     max_seq_len: int = 2048
     dropout: float = 0.0
+    share_qk: bool = False
+    mo_attn: bool = False
 
 
 class RMSNorm(torch.nn.Module):
@@ -99,14 +101,21 @@ class Attention(nn.Module):
         self.n_local_kv_heads = self.n_kv_heads // model_parallel_size
         self.n_rep = self.n_local_heads // self.n_local_kv_heads
         self.head_dim = args.dim // args.n_heads
-        self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
+        # self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
         self.wk = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
+        if args.share_qk:
+            self.wq = nn.ModuleList([self.wk for _ in range(args.n_heads // self.n_kv_heads)])
+        else:
+            self.wq = nn.Linear(args.dim, args.n_heads * self.head_dim, bias=False)
         self.wv = nn.Linear(args.dim, self.n_kv_heads * self.head_dim, bias=False)
         self.wo = nn.Linear(args.n_heads * self.head_dim, args.dim, bias=False)
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
-        self.alpha = nn.Parameter(torch.ones(args.max_seq_len,1))
+        self.share_qk = args.share_qk
+        self.mo_attn = args.mo_attn
+        if self.mo_attn:
+            self.alpha = nn.Parameter(torch.ones(args.max_seq_len))
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -127,7 +136,11 @@ class Attention(nn.Module):
         bsz, seqlen, _ = x.shape
 
         # QKV
-        xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+        if not self.share_qk:
+            xq, xk, xv = self.wq(x), self.wk(x), self.wv(x)
+        else:
+            xk, xv = self.wk(x), self.wv(x)
+            xq = torch.cat([w(x) for w in self.wq], dim=-1)
         xq = xq.view(bsz, seqlen, self.n_local_heads, self.head_dim)
         xk = xk.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
@@ -147,8 +160,14 @@ class Attention(nn.Module):
         # flash implementation
         if self.flash:
             output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
-            p_output = torch.nn.functional.scaled_dot_product_attention(p_xq, p_xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True) if p_xq is not None else 0
-            output = self.alpha * output + (1 - self.alpha) * p_output
+            if self.mo_attn:
+                if p_xq is not None and p_xk is not None:
+                    p_output = torch.nn.functional.scaled_dot_product_attention(p_xq, p_xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
+                else:
+                    assert p_xq is None and p_xk is None
+                    p_output = 0
+                alpha = self.alpha.view(1, 1, -1, 1)
+                output = alpha * output + (1 - alpha) * p_output
         else:
             # manual implementation
             scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
@@ -158,14 +177,19 @@ class Attention(nn.Module):
             scores = self.attn_dropout(scores)
             output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
             
-            p_scores = torch.matmul(p_xq, p_xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-            assert hasattr(self, 'mask')
-            p_scores = p_scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
-            p_scores = F.softmax(p_scores.float(), dim=-1).type_as(p_xq)
-            p_scores = self.attn_dropout(p_scores)
-            p_output = torch.matmul(p_scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
-            
-            output = self.alpha * output + (1 - self.alpha) * p_output
+            if self.mo_attn:
+                if p_xq is not None and p_xk is not None:
+                    p_scores = torch.matmul(p_xq, p_xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+                    assert hasattr(self, 'mask')
+                    p_scores = p_scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
+                    p_scores = F.softmax(p_scores.float(), dim=-1).type_as(p_xq)
+                    p_scores = self.attn_dropout(p_scores)
+                    p_output = torch.matmul(p_scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
+                else:
+                    assert p_xq is None and p_xk is None
+                    p_output = 0
+                alpha = self.alpha.view(1, 1, -1, 1)
+                output = alpha * output + (1 - alpha) * p_output
 
         # restore time as batch dimension and concat heads
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
@@ -173,7 +197,7 @@ class Attention(nn.Module):
         # final projection into the residual stream
         output = self.wo(output)
         output = self.resid_dropout(output)
-        return output, xq, xk
+        return (output, xq, xk) if self.mo_attn else output
 
 
 class FeedForward(nn.Module):
@@ -208,12 +232,16 @@ class TransformerBlock(nn.Module):
         self.layer_id = layer_id
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
+        self.mo_attn = args.mo_attn
 
-    def forward(self, x, freqs_cos, freqs_sin, xq, xk):
-        h, xq, xk = self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin, xq, xk)
-        h = x + h
+    def forward(self, x, freqs_cos, freqs_sin, xq=None, xk=None):
+        if self.mo_attn:
+            h, xq, xk = self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin, xq, xk)
+            h = x + h
+        else:
+            h = x + self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin)
         out = h + self.feed_forward.forward(self.ffn_norm(h))
-        return out, xq, xk
+        return (out, xq, xk) if self.mo_attn else out
 
 
 class Transformer(nn.Module):
@@ -268,9 +296,13 @@ class Transformer(nn.Module):
         freqs_cos = self.freqs_cos[:seqlen]
         freqs_sin = self.freqs_sin[:seqlen]
         
-        p_xq, p_xk = None, None
-        for layer in self.layers:
-            h, p_xq, p_xk = layer(h, freqs_cos, freqs_sin, p_xq, p_xk)
+        if self.params.mo_attn:
+            p_xq, p_xk = None, None
+            for layer in self.layers:
+                h, p_xq, p_xk = layer(h, freqs_cos, freqs_sin, p_xq, p_xk)
+        else:
+            for layer in self.layers:
+                h = layer(h, freqs_cos, freqs_sin)
         h = self.norm(h)
 
         if targets is not None:
