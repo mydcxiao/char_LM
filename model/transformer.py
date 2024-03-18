@@ -20,6 +20,7 @@ class ModelArgs:
     norm_eps: float = 1e-5
     max_seq_len: int = 2048
     dropout: float = 0.0
+    num_registers: int = 0
 
 
 class RMSNorm(torch.nn.Module):
@@ -106,6 +107,7 @@ class Attention(nn.Module):
         self.attn_dropout = nn.Dropout(args.dropout)
         self.resid_dropout = nn.Dropout(args.dropout)
         self.dropout = args.dropout
+        self.num_registers = args.num_registers
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -114,6 +116,11 @@ class Attention(nn.Module):
             mask = torch.full((1, 1, args.max_seq_len, args.max_seq_len), float("-inf"))
             mask = torch.triu(mask, diagonal=1)
             self.register_buffer("mask", mask)
+        
+        if args.num_registers > 0:
+            reg_mask = torch.full((1, 1, args.max_seq_len + args.num_registers, args.max_seq_len + args.num_registers), float("-inf"))
+            reg_mask = torch.triu(reg_mask, diagonal=1 + args.num_registers)
+            self.register_buffer("reg_mask", reg_mask) # why is this necessary? self.reg_mask = reg_mask doesn't work (dtype, device mismatch)
 
     def forward(
         self,
@@ -130,7 +137,14 @@ class Attention(nn.Module):
         xv = xv.view(bsz, seqlen, self.n_local_kv_heads, self.head_dim)
 
         # RoPE relative positional embeddings
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cos, freqs_sin)
+        if hasattr(self, 'reg_mask') and self.training:
+            xq_reg, xk_reg = xq[:, :self.num_registers], xk[:, :self.num_registers]
+            xq_seq, xk_seq = xq[:, self.num_registers:], xk[:, self.num_registers:]
+            xq_seq, xk_seq = apply_rotary_emb(xq_seq, xk_seq, freqs_cos, freqs_sin)
+            xq = torch.cat([xq_reg, xq_seq], dim=1)
+            xk = torch.cat([xk_reg, xk_seq], dim=1)
+        else:
+            xq, xk = apply_rotary_emb(xq, xk, freqs_cos, freqs_sin)
 
         # grouped multiquery attention: expand out keys and values
         xk = repeat_kv(xk, self.n_rep)  # (bs, seqlen, n_local_heads, head_dim)
@@ -143,15 +157,25 @@ class Attention(nn.Module):
 
         # flash implementation
         if self.flash:
-            output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
+            if hasattr(self, 'reg_mask') and self.training:
+                output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=self.reg_mask, dropout_p=self.dropout if self.training else 0.0, is_causal=False)
+            else:
+                output = torch.nn.functional.scaled_dot_product_attention(xq, xk, xv, attn_mask=None, dropout_p=self.dropout if self.training else 0.0, is_causal=True)
         else:
-            # manual implementation
-            scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
-            assert hasattr(self, 'mask')
-            scores = scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
-            scores = F.softmax(scores.float(), dim=-1).type_as(xq)
-            scores = self.attn_dropout(scores)
-            output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
+            if hasattr(self, 'reg_mask') and self.training:
+                scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+                scores = scores + self.reg_mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
+                scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+                scores = self.attn_dropout(scores)
+                output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
+            else:
+                # manual implementation
+                scores = torch.matmul(xq, xk.transpose(2, 3)) / math.sqrt(self.head_dim)
+                assert hasattr(self, 'mask')
+                scores = scores + self.mask[:, :, :seqlen, :seqlen]   # (bs, n_local_heads, seqlen, cache_len + seqlen)
+                scores = F.softmax(scores.float(), dim=-1).type_as(xq)
+                scores = self.attn_dropout(scores)
+                output = torch.matmul(scores, xv)  # (bs, n_local_heads, seqlen, head_dim)
 
         # restore time as batch dimension and concat heads
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
@@ -226,6 +250,10 @@ class Transformer(nn.Module):
         freqs_cos, freqs_sin = precompute_freqs_cis(self.params.dim // self.params.n_heads, self.params.max_seq_len)
         self.register_buffer("freqs_cos", freqs_cos, persistent=False)
         self.register_buffer("freqs_sin", freqs_sin, persistent=False)
+        
+        # set registers
+        if params.num_registers > 0:
+            self.registers = nn.Parameter(torch.zeros(1, params.num_registers, params.dim))
 
         # init all weights
         self.apply(self._init_weights)
@@ -245,6 +273,8 @@ class Transformer(nn.Module):
                 torch.nn.init.zeros_(module.bias)
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        if 'registers' in module.named_children():
+            torch.nn.init.normal_(module.registers, mean=0.0, std=1e-6)
 
     def forward(self, tokens: torch.Tensor, targets: Optional[torch.Tensor] = None) -> torch.Tensor:
         _bsz, seqlen = tokens.shape
@@ -252,10 +282,16 @@ class Transformer(nn.Module):
         h = self.dropout(h)
         freqs_cos = self.freqs_cos[:seqlen]
         freqs_sin = self.freqs_sin[:seqlen]
+        
+        if self.params.num_registers > 0 and self.training:
+            h = torch.cat([self.registers.expand(_bsz, -1, -1), h], dim=1)
 
         for layer in self.layers:
             h = layer(h, freqs_cos, freqs_sin)
         h = self.norm(h)
+        
+        if self.params.num_registers > 0 and self.training:
+            h = h[:, self.params.num_registers:]
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss

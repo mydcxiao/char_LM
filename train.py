@@ -57,6 +57,7 @@ n_heads = 6
 n_kv_heads = 6
 multiple_of = 32
 dropout = 0.0
+num_registers = 3
 # adamw optimizer
 gradient_accumulation_steps = 4  # used to simulate larger batch sizes
 learning_rate = 5e-4  # max learning rate
@@ -154,6 +155,7 @@ model_args = dict(
     multiple_of=multiple_of,
     max_seq_len=max_seq_len,
     dropout=dropout,
+    num_registers=num_registers,
 )  # start with model_args from command line
 if init_from == "scratch":
     # init a new model from scratch
