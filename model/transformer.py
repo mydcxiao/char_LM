@@ -285,6 +285,7 @@ class Transformer(nn.Module):
         
         if self.params.num_registers > 0 and self.training:
             h = torch.cat([self.registers.expand(_bsz, -1, -1), h], dim=1)
+            assert h.shape[1] == seqlen + self.params.num_registers, f"{h.shape[1]} != {seqlen} + {self.params.num_registers}"
 
         for layer in self.layers:
             h = layer(h, freqs_cos, freqs_sin)
