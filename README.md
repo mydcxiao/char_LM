@@ -3,7 +3,7 @@
 This is an implementation of character-level language models based on [llama.c](https://github.com/karpathy/llama2.c) and the paper [Character-Level Language Modeling with Deeper Self-Attention](https://arxiv.org/abs/1808.04444).
 
 ## Comparison with other models
-[comp](assets/comparison.png)
+![comp](assets/comparison.png)
 
 ## Dataset
 The training is based on (enwik8)[http://mattmahoney.net/dc/enwik8.zip]
@@ -41,5 +41,5 @@ python generate.py --checkpoint='out/ckpt.py'
 Please run the notebook [attn_map.ipynb](attn_map.ipynb)
 
 Comparison of last attention map with/without momentum attention
-[](assets/attn_map.png)
+![](assets/attn_map.png)
 left: w/o mo_attn; right: w/ mo_attn
