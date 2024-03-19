@@ -115,7 +115,7 @@ class Attention(nn.Module):
         self.share_qk = args.share_qk
         self.mo_attn = args.mo_attn
         if self.mo_attn:
-            self.alpha = nn.Parameter(torch.ones(args.max_seq_len))
+            self.alpha = nn.Parameter(torch.tensor(1.0))
 
         # use flash attention or a manual implementation?
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
@@ -236,11 +236,11 @@ class TransformerBlock(nn.Module):
 
     def forward(self, x, freqs_cos, freqs_sin, xq=None, xk=None):
         if self.mo_attn:
-            h, xq, xk = self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin, xq, xk)
+            h, xq, xk = self.attention(self.attention_norm(x), freqs_cos, freqs_sin, xq, xk)
             h = x + h
         else:
-            h = x + self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin)
-        out = h + self.feed_forward.forward(self.ffn_norm(h))
+            h = x + self.attention(self.attention_norm(x), freqs_cos, freqs_sin)
+        out = h + self.feed_forward(self.ffn_norm(h))
         return (out, xq, xk) if self.mo_attn else out
 
 
@@ -309,7 +309,8 @@ class Transformer(nn.Module):
             # if we are given some desired targets also calculate the loss
             logits = self.output(h)
             self.last_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
-            self.last_bpc = self.last_loss * torch.log2(torch.tensor(torch.e))
+            # self.last_bpc = self.last_loss * torch.log2(torch.tensor(torch.e))
+            self.last_bpc = F.cross_entropy(logits[:,-1].view(-1, logits.size(-1)), targets[:,-1].view(-1), ignore_index=-1) * torch.log2(torch.tensor(torch.e))
         else:
             # inference-time mini-optimization: only forward the output on the very last position
             logits = self.output(h[:, [-1], :]) # note: using list [-1] to preserve the time dim
