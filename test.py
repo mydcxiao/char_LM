@@ -18,7 +18,6 @@ from enwiki import Task
 
 # -----------------------------------------------------------------------------
 checkpoint = 'out/ckpt.pt'
-# eval_iters = 100
 data_cache_dir = "data"
 batch_size = 128  # if gradient_accumulation_steps > 1, this is the micro-batch size
 max_seq_len = 512
@@ -29,6 +28,7 @@ device = 'cuda' if torch.cuda.is_available() else 'cpu' # examples: 'cpu', 'cuda
 #dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32' or 'bfloat16' or 'float16'
 dtype = "float32"
 compile = False # use PyTorch 2.0 to compile the model to be faster
+include_train = False # include the training set in the evaluation
 exec(open('configurator.py').read()) # overrides from command line or config file
 # -----------------------------------------------------------------------------
 
@@ -65,11 +65,13 @@ iter_batches = partial(
     num_workers=0,
 )
 
+split_list = ["train", "val", "test"] if include_train else ["val", "test"]
+
 @torch.no_grad()
 def estimate_loss_bpc():
     out = {}
     model.eval()
-    for split in ["train", "val", "test"]:
+    for split in split_list:
         batch_iter = iter_batches(split=split)
         if vocab_source == "enwik8":
             # the .bin files are right along the .json files
@@ -104,5 +106,5 @@ def estimate_loss_bpc():
     return out
 
 loss_bpc = estimate_loss_bpc()
-print(f"Train loss: {loss_bpc['train'][0]:.4f}, Val loss: {loss_bpc['val'][0]:.4f}, Test loss: {loss_bpc['test'][0]:.4f}")
-print(f"Train bpc: {loss_bpc['train'][1]:.4f}, Val bpc: {loss_bpc['val'][1]:.4f}, Test bpc: {loss_bpc['test'][1]:.4f}")
+for key, val in loss_bpc.items():
+    print(f"{key}: loss_{key}={val[0]:.4f}, bpc_{key}={val[1]:.4f}")
