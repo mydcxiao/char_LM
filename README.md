@@ -35,4 +35,4 @@ python generate.py --checkpoint='out/ckpt.py'
 ```
 
 ## Visulizaiton of Attention Map
-Please run the notebook (attn_map.ipynb)[attn_map.ipynb]
+Please run the notebook [attn_map.ipynb](attn_map.ipynb)
