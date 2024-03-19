@@ -2,6 +2,8 @@
 
 This is an implementation of character-level language models based on [llama.c](https://github.com/karpathy/llama2.c) and the paper [Character-Level Language Modeling with Deeper Self-Attention](https://arxiv.org/abs/1808.04444).
 
+Pretrained model weights can be found [here](https://huggingface.co/mydcxiao/char_LM).
+
 ## Comparison with other models
 ![comp](assets/comparison.png)
 
