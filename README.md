@@ -42,4 +42,4 @@ Please run the notebook [attn_map.ipynb](attn_map.ipynb)
 
 Comparison of last attention map with/without momentum attention
 ![](assets/attn_map.png)
-left: w/o mo_attn; right: w/ mo_attn
+*left: w/o mo_attn; right: w/ mo_attn*
