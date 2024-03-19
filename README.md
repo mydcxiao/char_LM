@@ -1,4 +1,4 @@
-# Character-Level Language Model - Baby lLama
+# Character-Level Language Model - Baby lLama 2
 
 This is an implementation of character-level language models based on [llama.c](https://github.com/karpathy/llama2.c) and the paper [Character-Level Language Modeling with Deeper Self-Attention](https://arxiv.org/abs/1808.04444).
 
