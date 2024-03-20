@@ -7,6 +7,15 @@ Pretrained model weights can be found [here](https://huggingface.co/mydcxiao/cha
 ## Comparison with other models
 ![comp](assets/comparison.png)
 
+------------
+## Momentum Attention
+
+`$$\text{attn} = z \cdot \text{cur_attn} + (1 - z) \cdot \text{prev_attn}$$`
+
+`$$Q = \text{attn} \cdot V$$`
+
+------------
+
 ## Dataset
 The training is based on (enwik8)[http://mattmahoney.net/dc/enwik8.zip]
 
