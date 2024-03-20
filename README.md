@@ -10,7 +10,7 @@ Pretrained model weights can be found [here](https://huggingface.co/mydcxiao/cha
 ------------
 ## Momentum Attention
 
-$$\text{attn} = z \cdot \text{cur\_attn} + (1 - z) \cdot \text{prev\_attn}$$
+$$\text{attn} = z \cdot \text{cur-attn} + (1 - z) \cdot \text{prev-attn}$$
 
 $$Q = \text{attn} \cdot V$$
 
