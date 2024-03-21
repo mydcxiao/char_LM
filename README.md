@@ -17,7 +17,7 @@ $$Q = \text{attn} \cdot V$$
 ------------
 
 ## Dataset
-The training is based on (enwik8)[http://mattmahoney.net/dc/enwik8.zip]
+The training is based on [enwik8](http://mattmahoney.net/dc/enwik8.zip)
 
 Download the dataset
 ```shell
