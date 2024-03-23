@@ -35,7 +35,7 @@ python train.py --out_dir output --mo_attn=True
 ```
 `--mo_attn` can set if use momentum attention or not.
 
-Detailed configuration can be found at the beginning of (train.py)[train.py]
+Detailed configuration can be found at the beginning of [train.py](train.py)
 
 ## Test
 Get the loss and bpc on val/test set of enwik8.
