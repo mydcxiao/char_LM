@@ -39,7 +39,7 @@ packaging==24.0
 parso==0.8.3
 pexpect==4.9.0
 pickleshare==0.7.5
-pillow==10.2.0
+pillow==10.3.0
 pip==23.3.1
 platformdirs==4.2.0
 prompt-toolkit==3.0.42
